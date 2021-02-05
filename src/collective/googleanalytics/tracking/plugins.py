@@ -13,6 +13,7 @@ from pyga.requests import Tracker, Page, Session, Visitor
 from zope.site.hooks import getSite
 from zope.annotation.interfaces import IAnnotations
 import logging
+from urllib2 import HTTPError
 from urllib2 import URLError
 import threading
 import datetime
@@ -165,6 +166,7 @@ def is_accept_for_generic_content(request):
 def on_start(event):
     annotations = IAnnotations(event.request)
     annotations['ga_start_load'] = datetime.datetime.now()
+    logger.info('on_start: set ga_start_load to %s' % (annotations['ga_start_load']))
 
 
 def on_download(event):
@@ -209,6 +211,7 @@ def on_after_download(event):
     annotations = IAnnotations(event.request)
     web_property = annotations.get('web_property', None)
     if web_property is None:
+        logger.warning('on_after_download: exit because web_property is None')
         return
 
     tracker = Tracker(web_property, event.request.HTTP_HOST)
@@ -216,6 +219,7 @@ def on_after_download(event):
     visitor.extract_from_server_meta(event.request)
     if user_agents.parse(event.request.get('HTTP_USER_AGENT')).is_bot:
         # I suspect GA will do this for me already but better to be safe
+        logger.warning('on_after_download: exit because user agent is a bot')
         return
 
     utma = event.request.cookies.get('__utma', None)
@@ -227,7 +231,8 @@ def on_after_download(event):
     if utmb is not None:
         session.extract_from_utmb(utmb)
 
-    page = Page(event.request.PATH_INFO)
+    page = Page('/'+event.request.VIRTUAL_URL_PARTS[1])
+    # page = Page(event.request.PATH_INFO)
     page.referrer = event.request.HTTP_REFERER
     if 'ga_start_load' in annotations:
         page.load_time = int((datetime.datetime.now() - annotations.get('ga_start_load')).total_seconds() * 1000)
@@ -238,38 +243,46 @@ def on_after_download(event):
 
     # TODO: should update utma and utmb with changed data via setcookie?
     visitor.add_session(session)  # Not sure if we are supposed to do this or after pageview or at all?
+    # logger.info("on_after_download %s" % (visitor))
 
     def virtual_pageview(page, session, visitor):
-        logger.debug("Trying Virtual Page View to %s (sesion %s)" % (event.request.PATH_INFO, session.session_id))
+        logger.info("Trying Virtual Page View to %s (sesion %s)" % (event.request.PATH_INFO, session.session_id))
         try:
             tracker.track_pageview(page, session, visitor)
+        except HTTPError, e:
+            logger.warning("Virtual Page View Failed: %s" % e.reason)
         except URLError, e:
             logger.warning("Virtual Page View Failed: %s" % e.reason)
         else:
-            logger.debug("Virtual Success")
+            logger.info("Virtual Success")
     # Do in seperate thread just in case its slow. Doesn't touch zodb so its fine
     thread = threading.Thread(target=virtual_pageview, args=(page, session, visitor))
     thread.start()
 
 
 def annotate_web_property(request):
+    logger.debug('annotate_web_property: entered')
     context = getSite()
     analytics_tool = getToolByName(context, "portal_analytics", None)
     if analytics_tool is None:
+        logger.warning('annotate_web_property: cannot find analytics_tool')
         return
     analytics_settings = analytics_tool.get_settings()
     if 'File downloads (Server-side)' not in analytics_settings.tracking_plugin_names:
+        logger.info('annotate_web_property: server side downloads not enabled')
         return
 
     membership_tool = getToolByName(context, "portal_membership")
     member = membership_tool.getAuthenticatedMember()
     for role in analytics_settings.tracking_excluded_roles:
         if member.has_role(role):
+            logger.info('annotate_web_property: exit because member %s has role %s which is excluded' % (member.getMemberId(), role))
             return
 
     web_property = analytics_settings.tracking_web_property
     annotations = IAnnotations(request)
     annotations['web_property'] = web_property
+    logger.info('annotate_web_property: added web_property %s to annotations' % (web_property))
 
 
 def get_filename(request):
