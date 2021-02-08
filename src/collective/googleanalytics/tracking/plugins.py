@@ -13,6 +13,7 @@ from pyga.requests import Tracker, Page, Session, Visitor
 from zope.site.hooks import getSite
 from zope.annotation.interfaces import IAnnotations
 import logging
+from urllib import urlencode
 from urllib2 import HTTPError
 from urllib2 import URLError
 import threading
@@ -166,7 +167,7 @@ def is_accept_for_generic_content(request):
 def on_start(event):
     annotations = IAnnotations(event.request)
     annotations['ga_start_load'] = datetime.datetime.now()
-    logger.info('on_start: set ga_start_load to %s' % (annotations['ga_start_load']))
+    logger.debug('on_start: set ga_start_load to %s' % (annotations['ga_start_load']))
 
 
 def on_download(event):
@@ -231,8 +232,11 @@ def on_after_download(event):
     if utmb is not None:
         session.extract_from_utmb(utmb)
 
-    page = Page('/'+event.request.VIRTUAL_URL_PARTS[1])
-    # page = Page(event.request.PATH_INFO)
+    # page_path = event.request.PATH_INFO
+    page_path = '/' + event.request.VIRTUAL_URL_PARTS[1]
+    page_path = page_path.split('@@')[0] + 'view'
+
+    page = Page(page_path)
     page.referrer = event.request.HTTP_REFERER
     if 'ga_start_load' in annotations:
         page.load_time = int((datetime.datetime.now() - annotations.get('ga_start_load')).total_seconds() * 1000)
@@ -243,10 +247,10 @@ def on_after_download(event):
 
     # TODO: should update utma and utmb with changed data via setcookie?
     visitor.add_session(session)  # Not sure if we are supposed to do this or after pageview or at all?
-    # logger.info("on_after_download %s" % (visitor))
+    logger.debug("on_after_download %s" % (visitor))
 
     def virtual_pageview(page, session, visitor):
-        logger.info("Trying Virtual Page View to %s (sesion %s)" % (event.request.PATH_INFO, session.session_id))
+        logger.info("Trying Virtual Page View to %s (sesion %s)" % (page_path, session.session_id))
         try:
             tracker.track_pageview(page, session, visitor)
         except HTTPError, e:
@@ -256,8 +260,9 @@ def on_after_download(event):
         else:
             logger.info("Virtual Success")
     # Do in seperate thread just in case its slow. Doesn't touch zodb so its fine
-    thread = threading.Thread(target=virtual_pageview, args=(page, session, visitor))
-    thread.start()
+    # thread = threading.Thread(target=virtual_pageview, args=(page, session, visitor))
+    # thread.start()
+    target = virtual_pageview(page, session, visitor)
 
 
 def annotate_web_property(request):
@@ -269,7 +274,7 @@ def annotate_web_property(request):
         return
     analytics_settings = analytics_tool.get_settings()
     if 'File downloads (Server-side)' not in analytics_settings.tracking_plugin_names:
-        logger.info('annotate_web_property: server side downloads not enabled')
+        logger.debug('annotate_web_property: server side downloads not enabled')
         return
 
     membership_tool = getToolByName(context, "portal_membership")
@@ -282,7 +287,7 @@ def annotate_web_property(request):
     web_property = analytics_settings.tracking_web_property
     annotations = IAnnotations(request)
     annotations['web_property'] = web_property
-    logger.info('annotate_web_property: added web_property %s to annotations' % (web_property))
+    logger.debug('annotate_web_property: added web_property %s to annotations' % (web_property))
 
 
 def get_filename(request):
